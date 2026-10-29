@@ -1,0 +1,4 @@
+{
+  "juxd1x6rbjbppju6jddk6exxgw": { "label": "my-api", "cwd": "~/code/my-api", "kind": "claude" },
+  "home/infra": { "cwd": "/srv/infra", "kind": "codex", "machine": "gpu-box" }
+}
