@@ -167,10 +167,13 @@ export function createBot({ config, mm, herdr, state, saveState, output, relay, 
 
       const started = await startAgentWhenReady({ name, kind, paneId, machine });
 
+      // A started agent is at its prompt (idle); one blocked on a startup dialog
+      // stays "starting" so the poller's transition to blocked surfaces it.
       state.threads[rootId] = {
         root_id: rootId, channel_id: channelId,
         workspace_id: workspace.workspace_id, tab_id: tab.tab?.tab_id, pane_id: paneId,
-        agent_name: name, kind, machine, last_status: "starting", last_seen_at: post.create_at ?? Date.now(),
+        agent_name: name, kind, machine, last_status: started.blocked ? "starting" : "idle",
+        last_seen_at: post.create_at ?? Date.now(),
       };
       persist();
 
@@ -196,6 +199,9 @@ export function createBot({ config, mm, herdr, state, saveState, output, relay, 
           await herdr.promptAgent(name, prompt, machine);
         }
       }
+
+      // Replies that arrived while the agent was starting had no mapping yet.
+      await replayThread(state.threads[rootId]);
     } catch (err) {
       log.error("start agent failed:", err);
       await say(channelId, rootId, `Failed to start agent: ${err.message}`);
@@ -381,7 +387,16 @@ export function createBot({ config, mm, herdr, state, saveState, output, relay, 
 
   // ---- polling ------------------------------------------------------------
 
-  async function poll() {
+  // One poll at a time: an overlapping run would feed the relay the same
+  // snapshot twice and promote spinner churn to "persisted" output.
+  let inFlight = null;
+  function poll() {
+    if (inFlight) return inFlight;
+    inFlight = doPoll().finally(() => { inFlight = null; });
+    return inFlight;
+  }
+
+  async function doPoll() {
     const byMachine = new Map();
     for (const [rootId, mapping] of Object.entries(state.threads)) {
       const machine = mapping.machine ?? null;
@@ -433,6 +448,7 @@ export function createBot({ config, mm, herdr, state, saveState, output, relay, 
       output.drop(rootId);
       await clearPrompt(mapping, "agent exited");
       await say(mapping.channel_id, rootId, `Agent \`${mapping.agent_name}\` is no longer running.` + (dropped ? ` ${dropped} held message(s) dropped.` : ""));
+      delete state.threads[rootId]; // reported; a later reply is simply ignored
       return true;
     }
     if (status === prev) return false;
@@ -471,19 +487,21 @@ export function createBot({ config, mm, herdr, state, saveState, output, relay, 
 
   // ---- reconnect catch-up -------------------------------------------------
 
+  async function replayThread(mapping) {
+    const since = mapping.last_seen_at ?? 0;
+    const payload = await mm.threadPosts(mapping.root_id, since).catch(() => null);
+    if (!payload) return 0;
+    const posts = newUserPosts(payload, { since, botUserId: botUserId() });
+    for (const post of posts) await handlePosted(post, null);
+    return posts.length;
+  }
+
   async function catchUp() {
     // Seed every thread's relay with the current screen first, so answers to
     // the replayed prompts below are new output rather than baseline.
     await poll().catch((e) => log.error("pre-catch-up poll failed:", e));
     let missed = 0;
-    for (const mapping of Object.values(state.threads)) {
-      const payload = await mm.threadPosts(mapping.root_id, mapping.last_seen_at ?? 0).catch(() => null);
-      if (!payload) continue;
-      for (const post of newUserPosts(payload, { since: mapping.last_seen_at ?? 0, botUserId: botUserId() })) {
-        missed++;
-        await handlePosted(post, null);
-      }
-    }
+    for (const mapping of Object.values(state.threads)) missed += await replayThread(mapping);
     if (missed) log.log(`herdr-mattermost: processed ${missed} message(s) missed while disconnected`);
   }
 

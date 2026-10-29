@@ -40,7 +40,7 @@ test("createPost/editPost/reactions hit the documented endpoints with the right 
     "PUT /api/v4/posts/p1/patch": { id: "p1", message: "edited" },
     "POST /api/v4/reactions": {},
     "DELETE /api/v4/users/bot1/posts/p1/reactions/one": {},
-    "GET /api/v4/posts/root/thread?since=5": { order: [], posts: {} },
+    "GET /api/v4/posts/root/thread": { order: [], posts: {} },
   });
   const c = new MattermostClient({ url: "https://mm.test", token: "t", fetchImpl, WebSocketImpl: FakeWS });
   c.userId = "bot1";
@@ -54,7 +54,7 @@ test("createPost/editPost/reactions hit the documented endpoints with the right 
   await c.removeReaction("p1", "one");
   assert.equal(calls[3].method, "DELETE");
   await c.threadPosts("root", 5);
-  assert.match(calls[4].url, /\/posts\/root\/thread\?since=5$/);
+  assert.match(calls[4].url, /\/posts\/root\/thread\?/);
 });
 
 test("connect authenticates, parses posted/reaction events, and reconnects after close", async () => {
@@ -83,4 +83,32 @@ test("connect authenticates, parses posted/reaction events, and reconnects after
   h.close();
   await new Promise((r) => setTimeout(r, 10));
   assert.equal(FakeWS.instances.length, 2, "no reconnect after close()");
+});
+
+test("a silent websocket (no traffic after hello) is closed and reconnected", async () => {
+  const { fetchImpl } = fakeFetch({});
+  FakeWS.instances = [];
+  const c = new MattermostClient({ url: "https://mm.test", token: "t", fetchImpl, WebSocketImpl: FakeWS, log: { error() {}, log() {} }, backoff: { base: 1, max: 2 }, liveness: { pingMs: 5, timeoutMs: 15 } });
+  const h = c.connect({});
+  const ws = FakeWS.instances[0];
+  ws.open();
+  ws.emit({ event: "hello", data: {}, seq: 0 });
+  await new Promise((r) => setTimeout(r, 12));
+  assert.ok(ws.sent.some((m) => m.action === "ping"), "client pings");
+  assert.equal(FakeWS.instances.length, 1, "alive while under timeout");
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(ws.readyState, 3, "silent socket closed");
+  assert.ok(FakeWS.instances.length >= 2, "reconnected");
+  h.close();
+});
+
+test("threadPosts asks for posts from a timestamp downward with the parameters Mattermost implements", async () => {
+  const { fetchImpl, calls } = fakeFetch({ "GET /api/v4/posts/root/thread": { order: [], posts: {} } });
+  const c = new MattermostClient({ url: "https://mm.test", token: "t", fetchImpl, WebSocketImpl: FakeWS });
+  await c.threadPosts("root", 5);
+  const u = new URL(calls[0].url);
+  assert.equal(u.searchParams.get("fromCreateAt"), "5");
+  assert.equal(u.searchParams.get("direction"), "down");
+  assert.ok(Number(u.searchParams.get("perPage")) > 0);
+  assert.equal(u.searchParams.get("since"), null);
 });

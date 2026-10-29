@@ -14,9 +14,14 @@ export class OutputWriter {
     if (!clean.trim()) return;
     const cur = this.current.get(threadKey);
     if (cur && canAppend(cur.body, clean, this.limit)) {
-      cur.body = `${cur.body}\n${clean}`;
-      await this.mm.editPost(cur.postId, fenced(cur.body));
-      return;
+      try {
+        await this.mm.editPost(cur.postId, fenced(`${cur.body}\n${clean}`));
+        cur.body = `${cur.body}\n${clean}`;
+        return;
+      } catch (err) {
+        // The post is gone or the edit was refused: never retry it, start fresh.
+        this.current.delete(threadKey);
+      }
     }
     const parts = chunks(clean, this.limit);
     let last = null;

@@ -44,3 +44,17 @@ test("reset forces a new post; sanitize keeps fences intact; overlong text is ch
   assert.ok(mm.posts.length >= 4);
   for (const p of mm.posts) assert.ok(p.message.length <= 100);
 });
+
+test("an edit failure drops the dead post and starts a fresh one with the new lines", async () => {
+  const mm = fakeMM();
+  const w = new OutputWriter({ mm, limit: 500 });
+  await w.append("root", where, "line 1");
+  mm.editPost = async () => { throw new Error("404 post deleted"); };
+  await w.append("root", where, "line 2");
+  assert.equal(mm.posts.length, 2);
+  assert.equal(mm.posts[1].message, fenced("line 2"));
+  mm.editPost = async (id, message) => { const p = mm.posts.find((x) => x.id === id); p.message = message; return p; };
+  await w.append("root", where, "line 3");
+  assert.equal(mm.posts.length, 2, "appends to the fresh post again");
+  assert.equal(mm.posts[1].message, fenced("line 2\nline 3"));
+});

@@ -53,12 +53,13 @@ is adapted to the Mattermost message shape.
   = root post), `reaction_added` (`data.reaction` JSON string with
   `user_id`, `post_id`, `emoji_name`). Everything else ignored.
 - REST used: `POST /posts` (with `root_id` for replies), `PUT /posts/{id}/patch`
-  (edit in place), `GET /channels/{id}` (header/purpose), `GET /posts/{id}/thread?since=`
-  (catch-up), `POST /reactions`, `DELETE /users/{uid}/posts/{pid}/reactions/{name}`,
+  (edit in place), `GET /channels/{id}` (header/purpose), `GET /posts/{id}/thread?fromCreateAt=&direction=down&perPage=`
+  (catch-up; the thread endpoint has no `since`, callers filter by `create_at`), `POST /reactions`, `DELETE /users/{uid}/posts/{pid}/reactions/{name}`,
   `GET /users/me`, `GET /teams/name/{team}`, `GET /users/username/{name}`,
   `GET /files/{id}` (attachments).
 - Node ≥ 22 for the global `WebSocket` and `fetch`; no runtime dependencies.
-- Reconnect with backoff (1s → 60s). After every (re)connect, for each mapped
+- Reconnect with backoff (1s → 60s); the client pings every 30s and drops a
+  socket silent for 90s, since a half-open socket never fires close. After every (re)connect, for each mapped
   thread fetch posts since `last_seen_at` and process any user posts that
   arrived while disconnected, so prompts are never silently lost. `posted`
   events update `last_seen_at`.

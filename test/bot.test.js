@@ -256,3 +256,29 @@ test("catch-up seeds the relay before replaying missed prompts, so their answers
   const out = mm.posts.filter((p) => p.message.startsWith("```text")).map((p) => p.message).join("\n");
   assert.match(out, /Missed answer/);
 });
+
+test("a gone agent's mapping is reported and dropped", async () => {
+  const { bot, herdr, state, mm } = setup({ headers: { c1: "herdr:" } });
+  await bot.handlePosted(rootPost(), null);
+  herdr.setAgents([]);
+  await bot.poll();
+  assert.ok(mm.posts.some((p) => /no longer running/.test(p.message)));
+  assert.equal(state.threads.r1, undefined);
+});
+
+test("overlapping polls share one in-flight run", async () => {
+  const { bot, herdr, state } = setup({ headers: { c1: "herdr:" } });
+  await bot.handlePosted(rootPost(), null);
+  const m = state.threads.r1;
+  let lists = 0;
+  herdr.listAgents = async () => { lists++; await new Promise((r) => setTimeout(r, 5)); return [{ name: m.agent_name, status: "working" }]; };
+  await Promise.all([bot.poll(), bot.poll(), bot.poll()]);
+  assert.equal(lists, 1);
+});
+
+test("replies posted while the agent was starting are picked up once the mapping exists", async () => {
+  const { bot, herdr, mm } = setup({ headers: { c1: "herdr:" } });
+  mm.threadPosts = async (rootId, since) => ({ order: ["m2"], posts: { m2: { id: "m2", channel_id: "c1", root_id: rootId, user_id: "u1", type: "", message: "also run the tests", create_at: 150 } } });
+  await bot.handlePosted(rootPost(), { sender_name: "@fzf" });
+  assert.deepEqual(herdr.calls.prompt.map((a) => a[1]), ["fix the login bug", "user-u1: also run the tests"]);
+});

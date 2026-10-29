@@ -27,13 +27,17 @@ the relay, prompt parsing and Herdr CLI wrapper come from there.
 
 ## Mattermost setup
 
-On the Mattermost host, create the bot and its token:
+On the Mattermost host, create the bot and its token. `mmctl --local` cannot
+create bots, so the script mints a temporary access token for an admin user,
+creates the bot over the REST API, revokes that token, and then generates the
+bot's own token:
 
 ```sh
-# plain install
-./scripts/setup-bot.sh <team-name>
-# docker install
-MMCTL="docker exec mattermost mmctl --local" ./scripts/setup-bot.sh <team-name>
+# plain install (server on http://localhost:8065)
+./scripts/setup-bot.sh <team-name> <admin-username>
+# docker install, or a server reached by URL
+MM_URL=https://chat.example.org MMCTL="docker exec mattermost mmctl --local" \
+  ./scripts/setup-bot.sh <team-name> <admin-username>
 ```
 
 It prints `MM_TOKEN=…`. Then, in Mattermost, invite the bot to each channel

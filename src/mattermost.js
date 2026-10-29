@@ -9,13 +9,14 @@ export class MattermostError extends Error {
 }
 
 export class MattermostClient {
-  constructor({ url, token, fetchImpl = globalThis.fetch, WebSocketImpl = globalThis.WebSocket, log = console, backoff = { base: 1000, max: 60000 } }) {
+  constructor({ url, token, fetchImpl = globalThis.fetch, WebSocketImpl = globalThis.WebSocket, log = console, backoff = { base: 1000, max: 60000 }, liveness = { pingMs: 30000, timeoutMs: 90000 } }) {
     this.url = url.replace(/\/+$/, "");
     this.token = token;
     this.fetch = fetchImpl;
     this.WebSocket = WebSocketImpl;
     this.log = log;
     this.backoff = backoff;
+    this.liveness = liveness;
     this.userId = null;
   }
 
@@ -46,7 +47,11 @@ export class MattermostClient {
     return this.api("POST", "/posts", { channel_id: channelId, root_id: rootId, message });
   }
   editPost(id, message) { return this.api("PUT", `/posts/${id}/patch`, { message }); }
-  threadPosts(rootId, since = 0) { return this.api("GET", `/posts/${rootId}/thread?since=${since}`); }
+  // The thread endpoint has no `since`; fromCreateAt + direction=down returns
+  // the root plus posts at or after that time. Callers still filter by create_at.
+  threadPosts(rootId, since = 0) {
+    return this.api("GET", `/posts/${rootId}/thread?fromCreateAt=${since}&direction=down&perPage=200`);
+  }
   addReaction(postId, emoji) {
     return this.api("POST", "/reactions", { user_id: this.userId, post_id: postId, emoji_name: emoji });
   }
@@ -68,19 +73,45 @@ export class MattermostClient {
     let ws = null;
     const wsUrl = this.url.replace(/^http/, "ws") + "/api/v4/websocket";
 
+    let pinger = null;
+    const stopPinger = () => { if (pinger) clearInterval(pinger); pinger = null; };
+    const scheduleReconnect = () => {
+      stopPinger();
+      if (closed) return;
+      this.log.error(`herdr-mattermost: websocket closed; reconnecting in ${Math.round(delay / 1000)}s`);
+      setTimeout(open, delay);
+      delay = Math.min(delay * 2, this.backoff.max);
+    };
+
     const open = () => {
       if (closed) return;
       ws = new this.WebSocket(wsUrl);
+      const sock = ws;
       let authed = false;
-      ws.onopen = () => {
-        ws.send(JSON.stringify({ seq: 1, action: "authentication_challenge", data: { token: this.token } }));
+      let seq = 1;
+      let lastMessageAt = Date.now();
+      sock.onopen = () => {
+        sock.send(JSON.stringify({ seq: seq++, action: "authentication_challenge", data: { token: this.token } }));
       };
-      ws.onmessage = (m) => {
+      sock.onmessage = (m) => {
+        lastMessageAt = Date.now();
         let e;
         try { e = JSON.parse(m.data); } catch { return; }
         if (e.event === "hello") {
           authed = true;
           delay = this.backoff.base;
+          // A half-open socket never fires onclose: ping, and give up on silence.
+          stopPinger();
+          pinger = setInterval(() => {
+            if (Date.now() - lastMessageAt > this.liveness.timeoutMs) {
+              this.log.error("herdr-mattermost: websocket silent; reconnecting");
+              sock.onclose = null;
+              try { sock.close(); } catch {}
+              scheduleReconnect();
+              return;
+            }
+            try { sock.send(JSON.stringify({ seq: seq++, action: "ping" })); } catch {}
+          }, this.liveness.pingMs);
           onConnected?.();
           return;
         }
@@ -92,18 +123,14 @@ export class MattermostClient {
           this.log.error(`herdr-mattermost: event handler failed: ${err.message}`);
         }
       };
-      ws.onerror = (err) => this.log.error(`herdr-mattermost: websocket error: ${err?.message ?? err}`);
-      ws.onclose = () => {
-        if (closed) return;
-        this.log.error(`herdr-mattermost: websocket closed; reconnecting in ${Math.round(delay / 1000)}s`);
-        setTimeout(open, delay);
-        delay = Math.min(delay * 2, this.backoff.max);
-      };
+      sock.onerror = (err) => this.log.error(`herdr-mattermost: websocket error: ${err?.message ?? err}`);
+      sock.onclose = () => scheduleReconnect();
     };
     open();
     return {
       close() {
         closed = true;
+        stopPinger();
         try { ws?.close(); } catch {}
       },
     };
