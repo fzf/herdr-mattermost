@@ -1,7 +1,7 @@
 # herdr-mattermost — design
 
 Date: 2026-10-29
-Status: draft for review
+Status: approved 2026-10-29
 
 ## Goal
 
@@ -204,7 +204,8 @@ threads:  { <root_post_id>: { channel_id, workspace_id, tab_id, pane_id,
   with backoff so fixing `.env` self-heals.
 - herdr CLI errors surface as a thread reply (`Failed to start agent: …`),
   as upstream.
-- REST failures on post/edit are logged and retried once; relay lines that
-  fail to post stay pending for the next tick (the relay already defers).
+- REST failures on post/edit are logged; relay lines whose post fails are
+  not re-posted (same as upstream). The next tick continues from the relay's
+  current anchor.
 - Websocket drop: reconnect + catch-up; a `⟳ reconnected` note is posted
   only if catch-up found missed prompts.
