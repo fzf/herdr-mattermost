@@ -10,6 +10,18 @@ export class HerdrError extends Error {
   }
 }
 
+function parseJsonError(text) {
+  for (const line of text.split("\n")) {
+    const t = line.trim();
+    if (!t.startsWith("{")) continue;
+    try {
+      const e = JSON.parse(t).error;
+      if (e) return e;
+    } catch {}
+  }
+  return null;
+}
+
 function withMachine(args, machine) {
   return machine ? ["--machine", machine, ...args] : args;
 }
@@ -38,7 +50,12 @@ export function herdr(args, { timeout = 30000, machine = null } = {}) {
       try {
         parsed = JSON.parse(stdout);
       } catch {
-        if (status !== 0) {
+        // On failure herdr prints its JSON error on stderr and exits non-zero;
+        // surface the real error code so callers can branch on it.
+        const fromStderr = parseJsonError(stderr);
+        if (fromStderr) {
+          reject(new HerdrError(fromStderr.message ?? "herdr error", fromStderr.code ?? "error", stderr));
+        } else if (status !== 0) {
           reject(new HerdrError(`herdr ${args[0]} exited ${status}: ${stderr.trim()}`, "exit_error", stderr));
         } else {
           resolve({ raw: stdout });
