@@ -237,3 +237,22 @@ test("the first prompt's answer is relayed even when it lands before the first p
   const out = mm.posts.filter((p) => p.message.startsWith("```text")).map((p) => p.message).join("\n");
   assert.match(out, /Done: fixed it/);
 });
+
+test("catch-up seeds the relay before replaying missed prompts, so their answers are relayed", async () => {
+  const { bot, herdr, state, mm } = setup({ headers: { c1: "herdr:" } });
+  state.threads.r1 = { root_id: "r1", channel_id: "c1", agent_name: "a", pane_id: "p", kind: "claude", machine: null, last_status: "idle", last_seen_at: 100, relay_seeded: true };
+  const welcome = Array.from({ length: 30 }, (_, i) => `welcome line ${i}`);
+  const idle = [...welcome, "", "❯", "auto mode on"];
+  const answered = [...welcome, "", "❯ fzf: missed question", "⏺ Missed answer", "❯", "auto mode on"];
+  herdr.setAgents([{ name: "a", status: "idle" }]);
+  herdr.setRead(idle.join("\n"));
+  mm.threadPosts = async () => ({ order: ["m5"], posts: { m5: { id: "m5", channel_id: "c1", root_id: "r1", user_id: "u1", type: "", message: "missed question", create_at: 200 } } });
+  herdr.promptAgent = async (...a) => { herdr.calls.prompt.push(a); herdr.setRead(answered.join("\n")); };
+  await bot.catchUp();
+  assert.deepEqual(herdr.calls.prompt, [["a", "user-u1: missed question", null]]);
+  herdr.setAgents([{ name: "a", status: "working" }]);
+  await bot.poll();
+  await bot.poll();
+  const out = mm.posts.filter((p) => p.message.startsWith("```text")).map((p) => p.message).join("\n");
+  assert.match(out, /Missed answer/);
+});

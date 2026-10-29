@@ -472,6 +472,9 @@ export function createBot({ config, mm, herdr, state, saveState, output, relay, 
   // ---- reconnect catch-up -------------------------------------------------
 
   async function catchUp() {
+    // Seed every thread's relay with the current screen first, so answers to
+    // the replayed prompts below are new output rather than baseline.
+    await poll().catch((e) => log.error("pre-catch-up poll failed:", e));
     let missed = 0;
     for (const mapping of Object.values(state.threads)) {
       const payload = await mm.threadPosts(mapping.root_id, mapping.last_seen_at ?? 0).catch(() => null);
