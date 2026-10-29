@@ -179,7 +179,9 @@ export class Relay {
     const s = this.threads.get(threadId);
     if (!s) return [];
     const raw = s.deferred;
-    const emit = raw.filter((l) => !s.base.has(l));
+    // The final tail is mostly the status line that already went out once it
+    // persisted; unlike the live path, never re-post what was already emitted.
+    const emit = raw.filter((l) => !s.base.has(l) && !s.emitted.has(l));
     remember(s, emit);
     // Anchor on the stable part of the flushed tail — the last line is often
     // still-churning UI and would break the anchor on the next tick.

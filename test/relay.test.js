@@ -162,3 +162,13 @@ test("drop clears thread state; a later update re-baselines", () => {
   assert.equal(r.has("t"), false);
   assert.deepEqual(r.update("t", snap(stable(25, "other"))), []);
 });
+
+test("flush does not re-post a line that was already emitted", () => {
+  const r = new Relay();
+  r.update("t", snap([...stable(25), "⠋ spinner"]));
+  r.update("t", snap([...stable(25), "answer", "✻ Baked for 3s · done", "⠙"]));
+  assert.deepEqual(r.update("t", snap([...stable(25), "answer", "✻ Baked for 3s · done", "⠹"])), ["answer", "✻ Baked for 3s · done"]);
+  // The status line is still at the bottom (deferred) when the agent finishes.
+  r.update("t", snap([...stable(25), "answer", "✻ Baked for 3s · done", "", "❯"]));
+  assert.deepEqual(r.flush("t"), ["❯"]);
+});
