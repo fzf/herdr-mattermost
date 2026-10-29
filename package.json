@@ -4,7 +4,9 @@
   "private": true,
   "description": "Herdr plugin: Mattermost as a UI layer. Channels are workspaces, root posts are agents.",
   "type": "module",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "start": "node src/main.js",
     "test": "node --test 'test/*.test.js'",
