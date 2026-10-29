@@ -144,12 +144,12 @@ test("!close closes the tab and unmaps the thread", async () => {
 
 test("relayed output is appended in place and the done transition announces", async () => {
   const { bot, herdr, state, mm } = setup({ headers: { c1: "herdr:" } });
+  const stable = Array.from({ length: 30 }, (_, i) => `line ${i}`);
+  herdr.setRead(stable.join("\n")); // the idle screen the relay is seeded with at start
   await bot.handlePosted(rootPost(), null);
   const m = state.threads.r1;
-  const stable = Array.from({ length: 30 }, (_, i) => `line ${i}`);
   herdr.setAgents([{ name: m.agent_name, status: "working" }]);
-  herdr.setRead(stable.join("\n"));
-  await bot.poll(); // seeds baseline
+  await bot.poll(); // no change since the seed
   herdr.setRead([...stable, "hello world", "⠋ spinner"].join("\n"));
   await bot.poll();
   herdr.setRead([...stable, "hello world", "⠙ spinner"].join("\n"));
@@ -215,4 +215,25 @@ test("a second root post in an unbound channel reuses the channel's auto-created
   await bot.handlePosted(rootPost({ id: "r2", message: "second task" }), null);
   assert.deepEqual(seen, [null, "ws-new"]);
   assert.equal(state.threads.r2.workspace_id, "ws-new");
+});
+
+test("the first prompt's answer is relayed even when it lands before the first poll", async () => {
+  const { bot, herdr, state, mm } = setup({ headers: { c1: "herdr:" } });
+  // A realistic idle TUI: a welcome box tall enough that the relay anchors on it,
+  // followed by the input box and status bar.
+  const welcome = Array.from({ length: 30 }, (_, i) => `welcome line ${i}`);
+  const idle = [...welcome, "", "❯", "auto mode on"];
+  herdr.setRead(idle.join("\n"));
+  await bot.handlePosted(rootPost(), null);
+  const m = state.threads.r1;
+  // By the first poll the agent has already answered.
+  const answered = [...welcome, "", "❯ fix the login bug", "⏺ Done: fixed it", "✻ Brewed for 2s", "❯", "auto mode on"];
+  herdr.setAgents([{ name: m.agent_name, status: "working" }]);
+  herdr.setRead(answered.join("\n"));
+  await bot.poll();
+  await bot.poll();
+  herdr.setAgents([{ name: m.agent_name, status: "done" }]);
+  await bot.poll();
+  const out = mm.posts.filter((p) => p.message.startsWith("```text")).map((p) => p.message).join("\n");
+  assert.match(out, /Done: fixed it/);
 });

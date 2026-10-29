@@ -180,6 +180,13 @@ export function createBot({ config, mm, herdr, state, saveState, output, relay, 
         `Mid-turn prompts: ${midTurnDescription(kind)} · \`!!text\` sends raw input immediately.\n` +
         "Commands: `!status` `!read [n]` `!queue` `!approve` `!close` `!help`");
 
+      // Seed the relay with the agent's idle screen before the first prompt so
+      // a fast answer is new output, not part of the baseline.
+      if (!started.blocked) {
+        const screen = await herdr.readAgent(name, { source: "recent-unwrapped", lines: 400, machine }).catch(() => null);
+        if (screen !== null) { relay.update(rootId, screen); state.threads[rootId].relay_seeded = true; persist(); }
+      }
+
       if (prompt && !prompt.startsWith("!")) {
         if (started.blocked) {
           state.threads[rootId].queue = [{ id: null, text: prompt }];
