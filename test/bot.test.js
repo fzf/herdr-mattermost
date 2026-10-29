@@ -187,3 +187,32 @@ test("a cwd starting with ~ is expanded before it reaches herdr", async () => {
   assert.ok(seen.tab && !seen.tab.startsWith("~"), `tab cwd not expanded: ${seen.tab}`);
   assert.ok(seen.tab.endsWith("/code/x"));
 });
+
+test("agent blocked on a startup dialog (agent_not_ready): mapping is kept, first prompt is queued, next poll surfaces the dialog", async () => {
+  const { bot, herdr, state, mm } = setup({ headers: { c1: "herdr:" } });
+  herdr.startAgent = async () => { const e = new Error("blocked during startup"); e.code = "agent_not_ready"; throw e; };
+  await bot.handlePosted(rootPost(), null);
+  const m = state.threads.r1;
+  assert.ok(m, "mapping created");
+  assert.equal(herdr.calls.prompt.length, 0, "no prompt while blocked");
+  assert.deepEqual(m.queue.map((q) => q.text), ["fix the login bug"]);
+  herdr.setAgents([{ name: m.agent_name, status: "blocked" }]);
+  herdr.setRead("Do you trust the files in this folder?\n❯ 1. Yes, proceed\n  2. No, exit");
+  await bot.poll();
+  assert.ok(m.prompt_post_id, "startup dialog surfaced as a prompt post");
+  assert.deepEqual(mm.reactions.filter(([id]) => id === m.prompt_post_id).map(([, e]) => e), ["one", "two"]);
+  herdr.setAgents([{ name: m.agent_name, status: "idle" }]);
+  await bot.poll();
+  assert.deepEqual(herdr.calls.prompt, [[m.agent_name, "fix the login bug", null]], "queued first prompt sent once idle");
+});
+
+test("a second root post in an unbound channel reuses the channel's auto-created workspace", async () => {
+  const { bot, herdr, state } = setup({ headers: { c1: "herdr:" } });
+  const seen = [];
+  const orig = herdr.ensureWorkspace;
+  herdr.ensureWorkspace = async (a) => { seen.push(a.workspaceId); return orig(a); };
+  await bot.handlePosted(rootPost(), null);
+  await bot.handlePosted(rootPost({ id: "r2", message: "second task" }), null);
+  assert.deepEqual(seen, [null, "ws-new"]);
+  assert.equal(state.threads.r2.workspace_id, "ws-new");
+});

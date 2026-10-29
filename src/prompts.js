@@ -17,8 +17,33 @@ export function parsePrompt(snapshot) {
     }
   });
   if (options.length >= 2 && options.length <= 20) return { type: "options", options, cursor };
+  const cursorMenu = parseCursorMenu(lines);
+  if (cursorMenu) return cursorMenu;
   if (YESNO.test(snapshot)) return { type: "yesno" };
   return { type: "unknown" };
+}
+
+// Unnumbered menus (Claude Code's trust-folder dialog, select lists): one
+// line carries the cursor glyph and its siblings are aligned at the same
+// text column, e.g.
+//     ❯ No, exit
+//       Yes, I trust this folder
+// Options are the contiguous non-blank lines around the cursor whose text
+// starts at that column; numbering is positional (1-based).
+const CURSOR_LINE = /^(\s*)[❯›●]\s+(\S.*?)\s*$/;
+function parseCursorMenu(lines) {
+  const at = lines.findIndex((l) => CURSOR_LINE.test(l));
+  if (at === -1) return null;
+  const col = lines[at].match(CURSOR_LINE)[1].length + 2;
+  const textAt = (l) => (l.length > col && /\S/.test(l[col]) && !/\S/.test(l.slice(0, col).replace(/[❯›●]/, "")) ? l.slice(col).trim() : null);
+  let start = at;
+  while (start > 0 && textAt(lines[start - 1])) start--;
+  let end = at;
+  while (end + 1 < lines.length && textAt(lines[end + 1])) end++;
+  const options = [];
+  for (let i = start; i <= end; i++) options.push({ index: options.length, line: i, num: options.length + 1, label: textAt(lines[i]) });
+  if (options.length < 2 || options.length > 20) return null;
+  return { type: "options", options, cursor: at - start };
 }
 
 // Keys to send for a parsed option. With a visible cursor row, move the

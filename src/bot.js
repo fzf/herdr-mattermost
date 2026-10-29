@@ -86,12 +86,16 @@ export function createBot({ config, mm, herdr, state, saveState, output, relay, 
   }
 
   // `tab create` returns before the new shell has printed its prompt; `agent
-  // start` rejects with agent_pane_busy until it has. Retry briefly.
+  // start` rejects with agent_pane_busy until it has. Retry briefly. An agent
+  // that comes up blocked on a startup dialog (agent_not_ready) is still a
+  // running agent: report it so the poller can surface the dialog.
   async function startAgentWhenReady(args) {
     for (let attempt = 1; ; attempt++) {
       try {
-        return await herdr.startAgent(args);
+        await herdr.startAgent(args);
+        return { blocked: false };
       } catch (err) {
+        if (err.code === "agent_not_ready") return { blocked: true };
         if (err.code !== "agent_pane_busy" || attempt >= START_RETRIES) throw err;
         await sleep(START_RETRY_MS);
       }
@@ -140,7 +144,8 @@ export function createBot({ config, mm, herdr, state, saveState, output, relay, 
         workspace = await resolveWorkspace(channelCfg.workspace, machine);
         if (!workspace) throw new Error(`workspace "${channelCfg.workspace}" not found${machine ? ` on ${machine}` : ""} — fix the channel header or run \`!setup\``);
       } else {
-        const useBound = chState.bound && chState.machine === machine;
+        // Reuse the channel's workspace (bound or auto-created) while the machine matches.
+        const useBound = Boolean(chState.workspace_id) && (chState.machine ?? null) === machine;
         const info = await channelInfo(channelId).catch(() => null);
         workspace = await herdr.ensureWorkspace({
           workspaceId: useBound ? chState.workspace_id : null,
@@ -160,7 +165,7 @@ export function createBot({ config, mm, herdr, state, saveState, output, relay, 
       for (const t of Object.values(state.threads)) if ((t.machine ?? null) === machine) existing.add(t.agent_name);
       const name = slugify(label, existing);
 
-      await startAgentWhenReady({ name, kind, paneId, machine });
+      const started = await startAgentWhenReady({ name, kind, paneId, machine });
 
       state.threads[rootId] = {
         root_id: rootId, channel_id: channelId,
@@ -175,7 +180,15 @@ export function createBot({ config, mm, herdr, state, saveState, output, relay, 
         `Mid-turn prompts: ${midTurnDescription(kind)} · \`!!text\` sends raw input immediately.\n` +
         "Commands: `!status` `!read [n]` `!queue` `!approve` `!close` `!help`");
 
-      if (prompt && !prompt.startsWith("!")) await herdr.promptAgent(name, prompt, machine);
+      if (prompt && !prompt.startsWith("!")) {
+        if (started.blocked) {
+          state.threads[rootId].queue = [{ id: null, text: prompt }];
+          persist();
+          await say(channelId, rootId, "The agent is blocked on a startup dialog — answer it below and your post is sent once it is ready.");
+        } else {
+          await herdr.promptAgent(name, prompt, machine);
+        }
+      }
     } catch (err) {
       log.error("start agent failed:", err);
       await say(channelId, rootId, `Failed to start agent: ${err.message}`);
@@ -418,7 +431,9 @@ export function createBot({ config, mm, herdr, state, saveState, output, relay, 
     if (status === prev) return false;
 
     mapping.last_status = status;
-    const announce = config.statusPosts && prev !== "starting" && prev !== "gone";
+    // Startup dialogs (trust-folder prompts and the like) must be surfaced, so a
+    // blocked transition announces even from "starting"; "finished" does not.
+    const announce = config.statusPosts && prev !== "gone" && (status === "blocked" || prev !== "starting");
     if (prev === "blocked" && mapping.prompt_post_id) await clearPrompt(mapping, "answered");
 
     if (status === "blocked") {
