@@ -59,7 +59,7 @@ function setup({ headers = {}, allowed = new Set(["u1"]), channels = {} } = {}) 
   const herdr = fakeHerdr();
   const state = { channels, threads: {} };
   const output = new OutputWriter({ mm });
-  const bot = createBot({ config, mm, herdr, state, saveState() {}, output, relay: new Relay(), team: { id: "team", name: "home" }, allowed, log: { error() {}, log() {} } });
+  const bot = createBot({ config, mm, herdr, state, saveState() {}, output, relay: new Relay(), team: { id: "team", name: "home" }, allowed, log: { error() {}, log() {} }, sleep: async () => {} });
   return { bot, mm, herdr, state };
 }
 
@@ -160,4 +160,30 @@ test("relayed output is appended in place and the done transition announces", as
   herdr.setAgents([{ name: m.agent_name, status: "done" }]);
   await bot.poll();
   assert.ok(mm.posts.some((p) => /finished/.test(p.message)));
+});
+
+test("agent start is retried while the new pane's shell is still starting (agent_pane_busy)", async () => {
+  const { bot, herdr, state } = setup({ headers: { c1: "herdr:" } });
+  let attempts = 0;
+  herdr.startAgent = async (a) => {
+    attempts++;
+    if (attempts < 3) { const e = new Error("agent target pane is not an available shell"); e.code = "agent_pane_busy"; throw e; }
+    herdr.calls.startAgent.push(a);
+  };
+  await bot.handlePosted(rootPost(), null);
+  assert.equal(attempts, 3);
+  assert.equal(herdr.calls.startAgent.length, 1);
+  assert.ok(state.threads.r1, "mapping created after retry");
+});
+
+test("a cwd starting with ~ is expanded before it reaches herdr", async () => {
+  const { bot, herdr } = setup({ headers: { c1: "herdr: cwd=~/code/x" } });
+  const seen = {};
+  const origWs = herdr.ensureWorkspace, origTab = herdr.createTab;
+  herdr.ensureWorkspace = async (a) => { seen.ws = a.cwd; return origWs(a); };
+  herdr.createTab = async (a) => { seen.tab = a.cwd; return origTab(a); };
+  await bot.handlePosted(rootPost(), null);
+  assert.ok(seen.ws && !seen.ws.startsWith("~"), `workspace cwd not expanded: ${seen.ws}`);
+  assert.ok(seen.tab && !seen.tab.startsWith("~"), `tab cwd not expanded: ${seen.tab}`);
+  assert.ok(seen.tab.endsWith("/code/x"));
 });

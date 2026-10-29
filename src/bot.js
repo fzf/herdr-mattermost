@@ -1,5 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import { parsePrompt } from "./prompts.js";
 import { midTurnDescription } from "./capabilities.js";
 import { handleUserText, flushQueue } from "./thread-input.js";
@@ -9,8 +10,16 @@ import { newUserPosts } from "./catchup.js";
 import { chunks, fenced } from "./chunk.js";
 
 const CHANNEL_TTL_MS = 60_000;
+const START_RETRIES = 10;
+const START_RETRY_MS = 1000;
 
-export function createBot({ config, mm, herdr, state, saveState, output, relay, team, allowed, log = console }) {
+// herdr does not expand `~` in --cwd; a tab started with one lands in $HOME.
+export function expandHome(path) {
+  if (!path) return path;
+  return path === "~" ? homedir() : path.replace(/^~\//, `${homedir()}/`);
+}
+
+export function createBot({ config, mm, herdr, state, saveState, output, relay, team, allowed, log = console, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
   const persist = () => saveState(state);
   const botUserId = () => mm.userId;
   const authorized = (userId) => allowed.size === 0 || allowed.has(userId);
@@ -76,6 +85,19 @@ export function createBot({ config, mm, herdr, state, saveState, output, relay, 
     return workspaces.find((w) => w.workspace_id === idOrLabel || w.label === idOrLabel) ?? null;
   }
 
+  // `tab create` returns before the new shell has printed its prompt; `agent
+  // start` rejects with agent_pane_busy until it has. Retry briefly.
+  async function startAgentWhenReady(args) {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await herdr.startAgent(args);
+      } catch (err) {
+        if (err.code !== "agent_pane_busy" || attempt >= START_RETRIES) throw err;
+        await sleep(START_RETRY_MS);
+      }
+    }
+  }
+
   function mappingForPrompt(postId) {
     return Object.values(state.threads).find((t) => t.prompt_post_id === postId) ?? null;
   }
@@ -107,7 +129,7 @@ export function createBot({ config, mm, herdr, state, saveState, output, relay, 
       const files = await downloadAttachments(post);
       const prompt = [directives.prompt, ...files].filter(Boolean).join("\n");
       const kind = directives.kind ?? channelCfg.kind ?? config.agentKind;
-      const cwd = directives.cwd ?? channelCfg.cwd ?? config.cwd;
+      const cwd = expandHome(directives.cwd ?? channelCfg.cwd ?? config.cwd);
       const chState = (state.channels[channelId] ??= {});
       const machine = directives.machine ?? channelCfg.machine ?? chState.machine ?? null;
 
@@ -122,7 +144,7 @@ export function createBot({ config, mm, herdr, state, saveState, output, relay, 
         const info = await channelInfo(channelId).catch(() => null);
         workspace = await herdr.ensureWorkspace({
           workspaceId: useBound ? chState.workspace_id : null,
-          cwd: channelCfg.cwd ?? config.cwd,
+          cwd: expandHome(channelCfg.cwd ?? config.cwd),
           label: channelCfg.label ?? info?.display_name ?? info?.name ?? `mattermost-${channelId}`,
           machine,
         });
@@ -138,7 +160,7 @@ export function createBot({ config, mm, herdr, state, saveState, output, relay, 
       for (const t of Object.values(state.threads)) if ((t.machine ?? null) === machine) existing.add(t.agent_name);
       const name = slugify(label, existing);
 
-      await herdr.startAgent({ name, kind, paneId, machine });
+      await startAgentWhenReady({ name, kind, paneId, machine });
 
       state.threads[rootId] = {
         root_id: rootId, channel_id: channelId,
