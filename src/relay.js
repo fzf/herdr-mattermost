@@ -12,14 +12,18 @@
 //   floor     baseline lines after the anchor; stripped from each candidate
 //             so pre-relay content is never back-posted
 //   deferred  lines after the floor not yet confirmed (the pending tail)
-//   base      lines present at baseline/rebase time — suppressed forever so
-//             pre-relay content can't emit. Emitted lines are NOT tracked:
-//             legitimately repeated output must re-post.
+//   base      lines present at the first baseline — suppressed forever so
+//             pre-relay content can't emit. Emitted lines are NOT filtered on
+//             the normal path: legitimately repeated output must re-post.
+//   emitted   lines posted so far — consulted only on a display reset, so a
+//             redraw re-posts neither the baseline nor what was already sent.
 //   misses    consecutive ticks where the anchor wasn't found (display reset)
 
 const ANCHOR_LINES = 5;
 const CHURN_LINES = 20;
 const MAX_MISSES = 2;
+const RESET_DUMP_CAP = 80;
+const EMITTED_CAP = 5000;
 
 // The part of a snapshot outside the bottom churn zone — safe to anchor on.
 // Short snapshots shrink the churn window so they can still establish an
@@ -91,7 +95,35 @@ function baselineState(lines) {
     deferred: [],
     misses: 0,
     base: new Set(lines),
+    emitted: new Set(),
   };
+}
+
+function remember(s, lines) {
+  if (s.emitted.size > EMITTED_CAP) s.emitted.clear();
+  for (const l of lines) if (l.trim()) s.emitted.add(l);
+}
+
+// A display reset (agent TUI redraw, /clear, compaction): the anchor is gone,
+// so everything on screen is either pre-relay content (in `base`), already
+// posted (in `emitted`), or genuinely new output drawn since — post that,
+// capped so a re-wrapped scrollback cannot flood the thread.
+function rebase(s, lines) {
+  const pending = s.deferred.filter((l) => !s.base.has(l));
+  const fresh = head(lines).filter((l) => l.trim() && !s.base.has(l) && !s.emitted.has(l));
+  const dump = fresh.length > RESET_DUMP_CAP ? fresh.slice(-RESET_DUMP_CAP) : fresh;
+  const note = fresh.length > RESET_DUMP_CAP ? [`… ${fresh.length - RESET_DUMP_CAP} earlier lines omitted`] : [];
+  const hadAnchor = s.anchor.length > 0;
+
+  const next = baselineState(lines);
+  next.base = s.base;          // only the original baseline stays suppressed
+  next.floor = [];             // the churn zone is new output: emit once it persists
+  next.deferred = lines.slice(lines.length - (lines.length - head(lines).length));
+  next.emitted = s.emitted;
+  remember(next, [...pending, ...dump]);
+
+  if (!pending.length && !dump.length && !hadAnchor) return { next, emit: [] };
+  return { next, emit: [...collapse(pending), "⟳ display reset — output may be missing above", ...note, ...collapse(dump)] };
 }
 
 export class Relay {
@@ -116,14 +148,9 @@ export class Relay {
       if (s.misses <= MAX_MISSES) return [];
       // Anchor slid out of the read window or the display was cleared —
       // rebase on the current snapshot and surface the seam.
-      const emit = s.deferred.filter((l) => !s.base.has(l));
-      const hadAnchor = s.anchor.length > 0;
-      const next = baselineState(lines);
-      for (const l of s.base) next.base.add(l);
+      const { next, emit } = rebase(s, lines);
       this.threads.set(threadId, next);
-      return emit.length || hadAnchor
-        ? [...collapse(emit), "⟳ display reset — output may be missing above"]
-        : [];
+      return emit;
     }
     s.misses = 0;
 
@@ -141,6 +168,7 @@ export class Relay {
       s.floor = [];
     }
     const emit = raw.filter((l) => !s.base.has(l));
+    remember(s, emit);
     return collapse(emit);
   }
 
@@ -152,6 +180,7 @@ export class Relay {
     if (!s) return [];
     const raw = s.deferred;
     const emit = raw.filter((l) => !s.base.has(l));
+    remember(s, emit);
     // Anchor on the stable part of the flushed tail — the last line is often
     // still-churning UI and would break the anchor on the next tick.
     const a = anchorRun(head(raw), ANCHOR_LINES);

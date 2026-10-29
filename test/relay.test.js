@@ -68,16 +68,45 @@ test("anchor survives content interleaved with blank lines", () => {
   );
 });
 
-test("anchor loss rebases with a seam marker, without re-dumping", () => {
+test("anchor loss rebases with a seam marker and posts the content new since the baseline", () => {
   const r = new Relay();
   r.update("t", snap([...stable(25), "⠋ spinner"]));
-  // Display cleared — anchor is gone for three consecutive ticks.
-  assert.deepEqual(r.update("t", snap(stable(25, "cleared"))), []);
-  assert.deepEqual(r.update("t", snap(stable(25, "cleared"))), []);
-  const emit = r.update("t", snap(stable(25, "cleared")));
+  // Display cleared (agent TUI redraw) — anchor is gone for three consecutive ticks.
+  assert.deepEqual(r.update("t", snap([...stable(25, "answer"), "⠙ spinner"])), []);
+  assert.deepEqual(r.update("t", snap([...stable(25, "answer"), "⠹ spinner"])), []);
+  const emit = r.update("t", snap([...stable(25, "answer"), "⠸ spinner"]));
   assert.ok(emit.some((l) => l.includes("display reset")));
-  // The rebased snapshot's content is the new baseline — not posted.
-  assert.ok(!emit.some((l) => l.startsWith("cleared")));
+  // Lines that appeared with the redraw are new output, not pre-relay content.
+  assert.ok(emit.includes("answer 0"), `expected answer lines, got ${JSON.stringify(emit)}`);
+  // Baseline lines that survive the redraw are still never re-posted.
+  assert.ok(!emit.some((l) => l.startsWith("line ")));
+});
+
+test("lines already emitted before a reset are not re-dumped after it", () => {
+  const r = new Relay();
+  r.update("t", snap([...stable(25), "⠋ spinner"]));
+  r.update("t", snap([...stable(25), "hello world", "second line", "⠙ spinner"]));
+  assert.deepEqual(r.update("t", snap([...stable(25), "hello world", "second line", "⠹ spinner"])), ["hello world", "second line"]);
+  // Redraw keeps one emitted line but not the anchor run, so the anchor is lost.
+  const redrawn = ["hello world", ...stable(25, "fresh"), "⠼ spinner"];
+  r.update("t", snap(redrawn));
+  r.update("t", snap(redrawn));
+  const emit = r.update("t", snap(redrawn));
+  assert.ok(emit.some((l) => l.includes("display reset")), `expected a reset, got ${JSON.stringify(emit)}`);
+  assert.ok(emit.includes("fresh 0"));
+  assert.ok(!emit.includes("hello world"));
+});
+
+test("a reset re-dump is capped so a re-wrapped scrollback cannot flood the thread", () => {
+  const r = new Relay();
+  r.update("t", snap([...stable(25), "⠋ spinner"]));
+  const huge = [...stable(300, "wrapped"), "⠙ spinner"];
+  r.update("t", snap(huge));
+  r.update("t", snap(huge));
+  const emit = r.update("t", snap(huge));
+  assert.ok(emit.length <= 82, `emitted ${emit.length} lines`);
+  assert.ok(emit.some((l) => l.includes("omitted")));
+  assert.ok(emit.includes("wrapped 279"), "keeps the most recent lines");
 });
 
 test("short snapshots still anchor and relay new output", () => {
